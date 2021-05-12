@@ -24,11 +24,17 @@ var baseURL string = "https://kr.indeed.com/jobs?q=python&limit=50"
 
 func main() {
 	var jobs []extractedJob
+	c := make(chan []extractedJob)
 	totalPages := getPages()
 
+	fmt.Println("totalPages: ", totalPages)
+
 	for i := 0; i < totalPages; i++ {
-		extractedJobs := getPage(i)
-		// fmt.Println(extractedJobs)
+		go getPage(i, c)
+	}
+
+	for i := 0; i < totalPages; i++ {
+		extractedJobs := <-c
 		jobs = append(jobs, extractedJobs...)
 	}
 
@@ -36,8 +42,9 @@ func main() {
 	// fmt.Println(jobs)
 }
 
-func getPage(page int) []extractedJob {
+func getPage(page int, mainC chan<- []extractedJob) {
 	var jobs []extractedJob
+	c := make(chan extractedJob)
 	pageURL := baseURL + "&start=" + strconv.Itoa(page*50)
 	res, err := http.Get(pageURL)
 	checkErr(err)
@@ -51,11 +58,15 @@ func getPage(page int) []extractedJob {
 	searchCards := doc.Find(".jobsearch-SerpJobCard")
 
 	searchCards.Each(func(i int, card *goquery.Selection) {
-		job := extractJob(card)
-		jobs = append(jobs, job)
+		go extractJob(card, c)
 	})
 
-	return jobs
+	for i := 0; i < searchCards.Length(); i++ {
+		job := <-c
+		jobs = append(jobs, job)
+	}
+
+	mainC <- jobs
 }
 
 func writeJobs(jobs []extractedJob) {
@@ -69,7 +80,7 @@ func writeJobs(jobs []extractedJob) {
 
 	defer w.Flush()
 
-	fmt.Println(len(jobs))
+	fmt.Println("jobs: ", len(jobs))
 
 	headers := []string{"ID", "Title", "Location", "Salary", "Summary"}
 
@@ -114,13 +125,13 @@ func checkCode(res *http.Response) {
 	}
 }
 
-func extractJob(card *goquery.Selection) extractedJob {
+func extractJob(card *goquery.Selection, c chan<- extractedJob) {
 	id, _ := card.Attr("data-jk")
 	title := cleanString(card.Find(".title>a").Text())
 	location := cleanString(card.Find(".sjcl").Text())
 	salary := cleanString(card.Find(".salaryText").Text())
 	summary := cleanString(card.Find(".summary").Text())
-	return extractedJob{id: id, title: title, location: location, salary: salary, summary: summary}
+	c <- extractedJob{id: id, title: title, location: location, salary: salary, summary: summary}
 }
 
 func cleanString(str string) string {
