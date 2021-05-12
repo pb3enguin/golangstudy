@@ -1,57 +1,128 @@
 package main
 
 import (
+	"encoding/csv"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/PuerkitoBio/goquery"
 )
 
-type result struct {
-	url    string
-	status string
+type extractedJob struct {
+	id       string
+	title    string
+	location string
+	salary   string
+	summary  string
 }
 
-// var errRequestFailed = errors.New("request failed")
+var baseURL string = "https://kr.indeed.com/jobs?q=python&limit=50"
 
 func main() {
-	// map should be initialized before putting values in
-	// var results = make(map[string]string)
-	results := map[string]string{}
+	var jobs []extractedJob
+	totalPages := getPages()
 
-	c := make(chan result)
-
-	urls := []string{
-		"https://www.airbnb.com/",
-		"https://www.google.com/",
-		"https://www.amazon.com/",
-		"https://www.reddit.com/",
-		"https://www.google.com/",
-		"https://soundcloud.com/",
-		"https://www.facebook.com/",
-		"https://www.instagram.com/",
-		"https://academy.nomadcoders.co/",
+	for i := 0; i < totalPages; i++ {
+		extractedJobs := getPage(i)
+		// fmt.Println(extractedJobs)
+		jobs = append(jobs, extractedJobs...)
 	}
 
-	for _, url := range urls {
-		go hitURL(url, c)
-	}
+	writeJobs(jobs)
+	// fmt.Println(jobs)
+}
 
-	for i := 0; i < len(urls); i++ {
-		result := <-c
-		results[result.url] = result.status
-	}
+func getPage(page int) []extractedJob {
+	var jobs []extractedJob
+	pageURL := baseURL + "&start=" + strconv.Itoa(page*50)
+	res, err := http.Get(pageURL)
+	checkErr(err)
+	checkCode(res)
 
-	for url, status := range results {
-		fmt.Println(url, status)
+	defer res.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(res.Body)
+	checkErr(err)
+
+	searchCards := doc.Find(".jobsearch-SerpJobCard")
+
+	searchCards.Each(func(i int, card *goquery.Selection) {
+		job := extractJob(card)
+		jobs = append(jobs, job)
+	})
+
+	return jobs
+}
+
+func writeJobs(jobs []extractedJob) {
+	file, err := os.Create("jobs.csv")
+	checkErr(err)
+
+	utf8bom := []byte{0xEF, 0xBB, 0xBF}
+	file.Write(utf8bom)
+
+	w := csv.NewWriter(file)
+
+	defer w.Flush()
+
+	fmt.Println(len(jobs))
+
+	headers := []string{"ID", "Title", "Location", "Salary", "Summary"}
+
+	wErr := w.Write(headers)
+	checkErr(wErr)
+
+	for _, job := range jobs {
+		jobSlice := []string{"https://kr.indeed.com/viewjob?jk=" + job.id, job.title, job.location, job.salary, job.summary}
+		jwErr := w.Write(jobSlice)
+		checkErr(jwErr)
 	}
 }
 
-func hitURL(url string, c chan<- result) {
-	fmt.Println("Checking:", url)
-	resp, err := http.Get(url)
-	status := "OK"
-	if (err != nil) || (resp.StatusCode >= 400) {
-		fmt.Println(err, resp.StatusCode)
-		status = "FAILED"
+func getPages() int {
+	pages := 0
+	res, err := http.Get(baseURL)
+
+	checkErr(err)
+	checkCode(res)
+
+	defer res.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(res.Body)
+	checkErr(err)
+
+	doc.Find(".pagination").Each(func(i int, s *goquery.Selection) {
+		pages = s.Find("a").Length()
+	})
+
+	return pages
+}
+
+func checkErr(err error) {
+	if err != nil {
+		log.Fatalln(err)
 	}
-	c <- result{url: url, status: status}
+}
+
+func checkCode(res *http.Response) {
+	if res.StatusCode != 200 {
+		log.Fatalln("Request failed with Status:", res.StatusCode)
+	}
+}
+
+func extractJob(card *goquery.Selection) extractedJob {
+	id, _ := card.Attr("data-jk")
+	title := cleanString(card.Find(".title>a").Text())
+	location := cleanString(card.Find(".sjcl").Text())
+	salary := cleanString(card.Find(".salaryText").Text())
+	summary := cleanString(card.Find(".summary").Text())
+	return extractedJob{id: id, title: title, location: location, salary: salary, summary: summary}
+}
+
+func cleanString(str string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(str)), " ")
 }
